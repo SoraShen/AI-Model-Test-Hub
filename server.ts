@@ -11,7 +11,7 @@ import db from './db';
 import { decryptSecret, encryptSecret } from './crypto';
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key-123';
 const IS_PROD = process.env.NODE_ENV === 'production';
 

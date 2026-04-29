@@ -1,0 +1,8 @@
+{
+  "name": "AI Model Test Hub",
+  "description": "A professional platform for pre-sales engineers and enterprise customers to test and validate AI models (LLM and ASR). Features role-based access, model management, and comprehensive test history.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": []
+}

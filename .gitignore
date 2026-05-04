@@ -8,3 +8,6 @@ coverage/
 !.env.example
 DEPLOYMENT_HUAWEI_CLOUDFLARE.md
 *.m4a
+platform.db
+platform.db-journal
+*.db.bak.*

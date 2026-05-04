@@ -16,15 +16,24 @@ export default function Layout({ activeTab, setActiveTab, children }: LayoutProp
   const { user, logout } = useAuth();
   const { lang, setLang, t } = useI18n();
 
-  const menuItems = [
+  const menuItems: Array<{ id: Tab; icon: typeof FlaskConical; label: string }> = [
     { id: 'test', icon: FlaskConical, label: t('test') },
-    { id: 'history', icon: History, label: t('history') },
     { id: 'agent', icon: Bot, label: t('agent') },
   ];
 
   if (user?.role === 'admin') {
+    menuItems.push({ id: 'history', icon: History, label: t('history') });
     menuItems.push({ id: 'models', icon: Settings, label: t('models') });
   }
+
+  // If a non-admin lands on a tab that's not visible to them (e.g. history),
+  // bounce them back to the default Test tab.
+  React.useEffect(() => {
+    if (!menuItems.some((m) => m.id === activeTab)) {
+      setActiveTab('test');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.role, activeTab]);
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900 font-sans">

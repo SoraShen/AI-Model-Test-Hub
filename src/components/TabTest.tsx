@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { Send, Upload, Mic, Square, Loader2, FileAudio } from 'lucide-react';
+import { PcmStreamPlayer, base64PcmToWavBlob, pickUploadFilename } from '../utils/audio';
 
 export default function TabTest() {
   const { t } = useI18n();
@@ -14,7 +15,17 @@ export default function TabTest() {
   const [output, setOutput] = useState('');
   const [metrics, setMetrics] = useState<any | null>(null);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [omniVoice, setOmniVoice] = useState(false);
+  const [omniAudioUrl, setOmniAudioUrl] = useState<string>('');
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioPlayerRef = useRef<PcmStreamPlayer | null>(null);
+
+  useEffect(() => {
+    return () => {
+      audioPlayerRef.current?.stop();
+      audioPlayerRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     fetch('/api/models').then(res => res.json()).then(setModels);
@@ -25,32 +36,43 @@ export default function TabTest() {
     setIsLoading(true);
     setOutput('');
     setMetrics(null);
+    if (omniAudioUrl) URL.revokeObjectURL(omniAudioUrl);
+    setOmniAudioUrl('');
 
     const model = models.find(m => m.id === parseInt(selectedModel));
     const isOmniFlashSelected = model?.name === 'qwen3-omni-flash';
     const formData = new FormData();
-    formData.append('model_id', selectedModel);
+      formData.append('model_id', selectedModel);
     const isWhisperSelected = model?.name === 'whisper-large-v3';
     const effectiveStream = isWhisperSelected ? false : (isOmniFlashSelected ? true : stream);
     const effectiveThinking = enableThinking && effectiveStream;
     formData.append('enable_thinking', String(effectiveThinking));
     formData.append('stream', String(effectiveStream));
+    if (model?.type === 'OMNI') {
+      formData.append('omni_voice', String(omniVoice && effectiveStream));
+    }
 
     if (model.type === 'LLM') {
       formData.append('input_text', inputText);
     } else {
-      if (!audioBlob) {
-        setIsLoading(false);
-        return alert('Please provide audio');
+      if (model.type === 'OMNI') {
+        formData.append('input_text', inputText);
+        // OMNI now accepts text-only input (great for chatbot voice replies),
+        // an uploaded media file, or both. Only require something to send.
+        if (!audioBlob && !inputText.trim()) {
+          setIsLoading(false);
+          return alert('Please provide text or upload media (audio / image / video)');
+        }
+      } else {
+        if (!audioBlob) {
+          setIsLoading(false);
+          return alert('Please provide audio');
+        }
       }
-      const ext =
-        audioBlob.type.includes('webm') ? 'webm' :
-        audioBlob.type.includes('wav') ? 'wav' :
-        audioBlob.type.includes('mpeg') ? 'mp3' :
-        audioBlob.type.includes('mp3') ? 'mp3' :
-        audioBlob.type.includes('ogg') ? 'ogg' :
-        'audio';
-      formData.append('audio', audioBlob, `test_audio.${ext}`);
+      if (audioBlob) {
+        const field = model.type === 'OMNI' ? 'media' : 'audio';
+        formData.append(field, audioBlob, pickUploadFilename(audioBlob, 'recording'));
+      }
     }
 
     try {
@@ -66,6 +88,17 @@ export default function TabTest() {
       } else {
         const startedAt = performance.now();
         let firstTokenAt: number | null = null;
+        let audioB64 = '';
+
+        // Spin up a live PCM player synchronously inside this user-gesture click
+        // handler so Safari/Chrome let the AudioContext start without unlocking.
+        const wantsLivePlayback = model?.type === 'OMNI' && omniVoice;
+        if (wantsLivePlayback) {
+          audioPlayerRef.current?.stop();
+          const player = new PcmStreamPlayer(24000, 1);
+          player.start();
+          audioPlayerRef.current = player;
+        }
 
         const res = await fetch('/api/test/stream', { method: 'POST', body: formData });
         if (!res.ok || !res.body) {
@@ -109,6 +142,9 @@ export default function TabTest() {
               if (firstTokenAt === null) firstTokenAt = performance.now();
               full += data;
               setOutput(full);
+            } else if (event === 'audio') {
+              audioB64 += data;
+              audioPlayerRef.current?.enqueueBase64Pcm16(data);
             } else if (event === 'metrics') {
               try {
                 setMetrics(JSON.parse(data));
@@ -119,6 +155,11 @@ export default function TabTest() {
               setOutput(`Error: ${data}`);
             }
           }
+        }
+
+        const wavBlob = base64PcmToWavBlob(audioB64, 24000, 1);
+        if (wavBlob) {
+          setOmniAudioUrl(URL.createObjectURL(wavBlob));
         }
 
         const endAt = performance.now();
@@ -169,7 +210,15 @@ export default function TabTest() {
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) setAudioBlob(file);
+    if (!file) return;
+    const name = file.name.toLowerCase();
+    const ext = name.includes('.') ? name.split('.').pop() || '' : '';
+    const model = models.find(m => m.id === parseInt(selectedModel));
+    if (model?.type === 'ASR' && model?.name === 'qwen3-asr-flash') {
+      const allowed = new Set(['aac','amr','avi','aiff','flac','flv','mkv','mp3','mpeg','mpg','ogg','opus','wav','webm','wma','wmv','m4a','mp4','mov']);
+      if (!allowed.has(ext)) return alert(`Unsupported file type .${ext || '(none)'} for qwen3-asr-flash`);
+    }
+    setAudioBlob(file);
   };
 
   const activeModel = models.find(m => m.id === parseInt(selectedModel));
@@ -239,6 +288,18 @@ export default function TabTest() {
                   />
                   Thinking {activeModel.type !== 'LLM' ? '(LLM only)' : effectiveStream ? '' : '(streaming only)'}
                 </label>
+                {activeModel.type === 'OMNI' && (
+                  <label className={`flex items-center gap-2 text-xs select-none ${effectiveStream ? 'text-slate-700' : 'text-slate-400'}`}>
+                    <input
+                      type="checkbox"
+                      checked={omniVoice && effectiveStream}
+                      onChange={(e) => setOmniVoice(e.target.checked)}
+                      disabled={!effectiveStream}
+                      className="accent-indigo-600"
+                    />
+                    Voice reply {effectiveStream ? '' : '(streaming only)'}
+                  </label>
+                )}
               </div>
             </div>
           )}
@@ -276,18 +337,41 @@ export default function TabTest() {
                 className="w-full h-full bg-transparent resize-none outline-none text-sm text-slate-800 placeholder:text-slate-400 font-mono leading-relaxed px-0"
                 placeholder="Enter model instructions or prompt context here..."
               />
-            ) : activeModel?.type === 'ASR' ? (
+            ) : (activeModel?.type === 'ASR' || activeModel?.type === 'OMNI') ? (
               <div className="h-full flex flex-col gap-6">
                  <div className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-xl bg-slate-50 group hover:border-indigo-300 transition-colors relative">
                     <input
                       type="file"
-                      accept="audio/*"
+                    accept={activeModel?.type === 'OMNI' ? 'audio/*,image/*,video/*' : 'audio/*'}
                       onChange={handleFileUpload}
                       className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                     />
                     <Upload className="text-slate-500 group-hover:text-indigo-600 mb-2" size={32} />
-                    <span className="text-sm font-medium text-slate-500">{audioBlob ? audioBlob.name : 'Drop audio file here'}</span>
+                    <span className="text-sm font-medium text-slate-500">
+                      {audioBlob
+                        ? (audioBlob as any).name || 'Recorded audio'
+                        : activeModel?.type === 'OMNI'
+                          ? 'Optional: drop audio / image / video'
+                          : 'Drop audio file here'}
+                    </span>
                  </div>
+
+                 {activeModel?.type === 'OMNI' && (
+                   <div className="border border-slate-200 rounded-xl bg-white p-4">
+                     <div className="flex items-center justify-between mb-2">
+                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                         Text {audioBlob ? '(optional)' : '(or speak via mic / upload)'}
+                       </span>
+                       <span className="text-[10px] text-slate-500 font-mono">CHARS: {inputText.length}</span>
+                     </div>
+                     <textarea
+                       value={inputText}
+                       onChange={(e) => setInputText(e.target.value)}
+                       className="w-full min-h-[90px] bg-transparent resize-none outline-none text-sm text-slate-800 placeholder:text-slate-400 font-mono leading-relaxed"
+                       placeholder="Type a message — OMNI can answer in text or voice without any audio input..."
+                     />
+                   </div>
+                 )}
                  
                  <button
                    onClick={isRecording ? stopRecording : startRecording}
@@ -346,6 +430,9 @@ export default function TabTest() {
                     <Loader2 className="animate-spin" size={14} />
                     Streaming...
                   </div>
+                )}
+                {omniAudioUrl && (
+                  <audio className="w-full" controls src={omniAudioUrl} />
                 )}
                 <div className="whitespace-pre-wrap">{output}</div>
               </div>

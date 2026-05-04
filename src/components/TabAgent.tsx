@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../context/I18nContext';
 import { Loader2, Mic, Square, Upload, Wand2 } from 'lucide-react';
+import { PcmStreamPlayer, base64PcmToWavBlob, pickUploadFilename } from '../utils/audio';
 
 type Pipeline = 'llm' | 'asr_llm' | 'omni';
 
@@ -19,10 +20,20 @@ export default function TabAgent() {
   const [inputText, setInputText] = useState('');
   const [enableThinking, setEnableThinking] = useState(false);
   const [stream, setStream] = useState(false);
+  const [omniVoice, setOmniVoice] = useState(false);
+  const [omniAudioUrl, setOmniAudioUrl] = useState<string>('');
 
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioPlayerRef = useRef<PcmStreamPlayer | null>(null);
+
+  useEffect(() => {
+    return () => {
+      audioPlayerRef.current?.stop();
+      audioPlayerRef.current = null;
+    };
+  }, []);
 
   const [isLoading, setIsLoading] = useState(false);
   const [output, setOutput] = useState('');
@@ -33,9 +44,18 @@ export default function TabAgent() {
     fetch('/api/models').then((res) => res.json()).then(setModels);
   }, []);
 
-  const llmModels = useMemo(() => models.filter((m) => m.type === 'LLM'), [models]);
+  // The "LLM Model" dropdown (used both in the LLM pipeline and as the answer
+  // generator in the ASR -> LLM pipeline) accepts both LLM and OMNI models;
+  // OMNI models can do plain text-in / text-out as well as voice reply.
+  const llmModels = useMemo(
+    () => models.filter((m) => m.type === 'LLM' || m.type === 'OMNI'),
+    [models]
+  );
   const asrModels = useMemo(() => models.filter((m) => m.type === 'ASR'), [models]);
-  const omniModels = useMemo(() => asrModels.filter((m) => String(m.name || '').toLowerCase().includes('omni')), [asrModels]);
+  const omniModels = useMemo(
+    () => models.filter((m) => m.type === 'OMNI' || String(m.name || '').toLowerCase().includes('omni')),
+    [models]
+  );
 
   const selectedLlm = useMemo(
     () => models.find((m) => String(m.id) === String(llmModelId)),
@@ -61,6 +81,13 @@ export default function TabAgent() {
     return '';
   }, [pipeline, selectedAsr?.name, selectedLlm?.name, selectedOmni?.name]);
 
+  // True when the user picked an OMNI model from the "LLM Model" dropdown of
+  // the LLM pipeline. In that case we expand the input area to look like the
+  // omni pipeline (mic + upload + voice reply) and the server routes it
+  // through the OMNI chat path.
+  const isLlmOmni = pipeline === 'llm' && selectedLlm?.type === 'OMNI';
+  const omniLikePipeline = pipeline === 'omni' || isLlmOmni;
+
   useEffect(() => {
     // Basic auto-select to reduce clicks.
     if (!llmModelId && llmModels.length) setLlmModelId(String(llmModels[0].id));
@@ -85,7 +112,17 @@ export default function TabAgent() {
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) setAudioBlob(file);
+    if (!file) return;
+    const name = file.name.toLowerCase();
+    const ext = name.includes('.') ? name.split('.').pop() || '' : '';
+    if (pipeline === 'asr_llm') {
+      const asr = models.find((m) => String(m.id) === String(asrModelId));
+      if (asr?.type === 'ASR' && asr?.name === 'qwen3-asr-flash') {
+        const allowed = new Set(['aac','amr','avi','aiff','flac','flv','mkv','mp3','mpeg','mpg','ogg','opus','wav','webm','wma','wmv','m4a','mp4','mov']);
+        if (!allowed.has(ext)) return alert(`Unsupported file type .${ext || '(none)'} for qwen3-asr-flash`);
+      }
+    }
+    setAudioBlob(file);
   };
 
   const startRecording = async () => {
@@ -122,6 +159,8 @@ export default function TabAgent() {
     setOutput('');
     setSteps([]);
     setMetrics(null);
+    if (omniAudioUrl) URL.revokeObjectURL(omniAudioUrl);
+    setOmniAudioUrl('');
 
     const fd = new FormData();
     fd.append('pipeline', pipeline);
@@ -129,19 +168,14 @@ export default function TabAgent() {
     fd.append('input_text', inputText);
     fd.append('stream', String(stream));
     fd.append('enable_thinking', String(enableThinking && stream));
+    if (omniLikePipeline) fd.append('omni_voice', String(omniVoice && stream));
     if (llmModelId) fd.append('llm_model_id', llmModelId);
     if (asrModelId) fd.append('asr_model_id', asrModelId);
     if (omniModelId) fd.append('omni_model_id', omniModelId);
 
-    if ((pipeline === 'asr_llm' || pipeline === 'omni') && audioBlob) {
-      const ext =
-        audioBlob.type.includes('webm') ? 'webm' :
-        audioBlob.type.includes('wav') ? 'wav' :
-        audioBlob.type.includes('mpeg') ? 'mp3' :
-        audioBlob.type.includes('mp3') ? 'mp3' :
-        audioBlob.type.includes('ogg') ? 'ogg' :
-        'audio';
-      fd.append('audio', audioBlob, `agent_audio.${ext}`);
+    if (audioBlob && (pipeline === 'asr_llm' || omniLikePipeline)) {
+      const field = omniLikePipeline ? 'media' : 'audio';
+      fd.append(field, audioBlob, pickUploadFilename(audioBlob, 'recording'));
     }
 
     try {
@@ -158,6 +192,15 @@ export default function TabAgent() {
       } else {
         const startedAt = performance.now();
         let firstTokenAt: number | null = null;
+
+        const wantsLivePlayback = omniLikePipeline && omniVoice;
+        if (wantsLivePlayback) {
+          audioPlayerRef.current?.stop();
+          const player = new PcmStreamPlayer(24000, 1);
+          player.start();
+          audioPlayerRef.current = player;
+        }
+
         const res = await fetch('/api/agent/run/stream', { method: 'POST', body: fd });
         if (!res.ok || !res.body) {
           const text = await res.text();
@@ -168,6 +211,7 @@ export default function TabAgent() {
         const decoder = new TextDecoder();
         let buf = '';
         let full = '';
+        let audioB64 = '';
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -193,6 +237,9 @@ export default function TabAgent() {
               if (firstTokenAt === null) firstTokenAt = performance.now();
               full += data;
               setOutput(full);
+            } else if (event === 'audio') {
+              audioB64 += data;
+              audioPlayerRef.current?.enqueueBase64Pcm16(data);
             } else if (event === 'metrics') {
               try { setMetrics(JSON.parse(data)); } catch {}
             } else if (event === 'steps') {
@@ -201,6 +248,10 @@ export default function TabAgent() {
               setOutput(`Error: ${data}`);
             }
           }
+        }
+        const wavBlob = base64PcmToWavBlob(audioB64, 24000, 1);
+        if (wavBlob) {
+          setOmniAudioUrl(URL.createObjectURL(wavBlob));
         }
         const endAt = performance.now();
         if (!metrics) {
@@ -217,14 +268,19 @@ export default function TabAgent() {
     }
   };
 
-  const needsAudio = pipeline === 'asr_llm' || pipeline === 'omni';
+  // Audio inputs are needed for ASR->LLM (always), the OMNI pipeline (when no
+  // text is given), and for an OMNI model selected in the LLM pipeline (when
+  // no text is given). Text-only OMNI is allowed.
+  const needsAudio = pipeline === 'asr_llm' || omniLikePipeline;
   const canRun =
     !isLoading &&
     (pipeline === 'llm'
-      ? !!llmModelId
+      ? !!llmModelId && (isLlmOmni
+          ? !!audioBlob || !!inputText.trim()
+          : true)
       : pipeline === 'asr_llm'
         ? !!asrModelId && !!llmModelId && !!audioBlob
-        : !!omniModelId && !!audioBlob);
+        : !!omniModelId && (!!audioBlob || !!inputText.trim()));
 
   return (
     <div className="grid grid-rows-[auto,1fr] gap-6 h-full">
@@ -245,7 +301,7 @@ export default function TabAgent() {
 
           {pipeline === 'llm' && (
             <div className="space-y-2">
-              <label className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">LLM Model</label>
+              <label className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">LLM / OMNI Model</label>
               <select
                 value={llmModelId}
                 onChange={(e) => setLlmModelId(e.target.value)}
@@ -254,7 +310,7 @@ export default function TabAgent() {
                 <option value="">-- Select --</option>
                 {llmModels.map((m) => (
                   <option key={m.id} value={m.id}>
-                    {m.name}
+                    {m.name} ({m.type})
                   </option>
                 ))}
               </select>
@@ -279,7 +335,7 @@ export default function TabAgent() {
                 </select>
               </div>
               <div className="space-y-2">
-                <label className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">LLM Model</label>
+                <label className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">LLM / OMNI Model</label>
                 <select
                   value={llmModelId}
                   onChange={(e) => setLlmModelId(e.target.value)}
@@ -288,7 +344,7 @@ export default function TabAgent() {
                   <option value="">-- Select --</option>
                   {llmModels.map((m) => (
                     <option key={m.id} value={m.id}>
-                      {m.name}
+                      {m.name} ({m.type})
                     </option>
                   ))}
                 </select>
@@ -327,7 +383,7 @@ export default function TabAgent() {
                   />
                   Streaming
                 </label>
-                {(pipeline === 'llm' || pipeline === 'asr_llm') && (
+                {(pipeline === 'llm' || pipeline === 'asr_llm') && !isLlmOmni && (
                   <label className={`flex items-center gap-2 text-xs select-none ${stream ? 'text-slate-700' : 'text-slate-400'}`}>
                     <input
                       type="checkbox"
@@ -337,6 +393,18 @@ export default function TabAgent() {
                       className="accent-indigo-600"
                     />
                     Thinking {stream ? '' : '(streaming only)'}
+                  </label>
+                )}
+                {omniLikePipeline && (
+                  <label className={`flex items-center gap-2 text-xs select-none ${stream ? 'text-slate-700' : 'text-slate-400'}`}>
+                    <input
+                      type="checkbox"
+                      checked={omniVoice && stream}
+                      onChange={(e) => setOmniVoice(e.target.checked)}
+                      disabled={!stream}
+                      className="accent-indigo-600"
+                    />
+                    Voice reply (English) {stream ? '' : '(streaming only)'}
                   </label>
                 )}
               </div>
@@ -384,15 +452,40 @@ export default function TabAgent() {
                 <div className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-xl bg-slate-50 group hover:border-indigo-300 transition-colors relative">
                   <input
                     type="file"
-                    accept="audio/*"
+                    accept={omniLikePipeline ? 'audio/*,image/*,video/*' : 'audio/*'}
                     onChange={handleFileUpload}
                     className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                   />
                   <Upload className="text-slate-500 group-hover:text-indigo-600 mb-2" size={32} />
                   <span className="text-sm font-medium text-slate-500">
-                    {audioBlob ? (audioBlob as any).name || 'Recorded audio' : 'Drop audio file here'}
+                    {audioBlob
+                      ? (audioBlob as any).name || 'Recorded audio'
+                      : omniLikePipeline
+                        ? 'Optional: drop audio / image / video'
+                        : 'Drop audio file here'}
                   </span>
                 </div>
+
+                {omniLikePipeline && (
+                  <div className="border border-slate-200 rounded-xl bg-white p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                        Text {audioBlob ? '(optional)' : '(or speak via mic / upload)'}
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-mono">CHARS: {inputText.length}</span>
+                    </div>
+                    <textarea
+                      value={inputText}
+                      onChange={(e) => setInputText(e.target.value)}
+                      className="w-full min-h-[90px] bg-transparent resize-none outline-none text-sm text-slate-800 placeholder:text-slate-400 font-mono leading-relaxed"
+                      placeholder={
+                        isLlmOmni
+                          ? 'Type your message – the OMNI model can answer in text or voice...'
+                          : 'Add context or instructions for omni (optional)...'
+                      }
+                    />
+                  </div>
+                )}
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <button
@@ -469,6 +562,9 @@ export default function TabAgent() {
                   </div>
                 )}
 
+                {omniAudioUrl && (
+                  <audio className="w-full" controls src={omniAudioUrl} />
+                )}
                 {output ? (
                   <div className="whitespace-pre-wrap">{output}</div>
                 ) : (

@@ -27,8 +27,131 @@ function fileToDataUrl(file: { buffer: Buffer; mimetype?: string }): string {
   return `data:${mime};base64,${b64}`;
 }
 
+function getUploadedFile(req: any, fieldNames: string[]): { buffer: Buffer; mimetype?: string; originalname?: string } | null {
+  if (req?.file) return req.file;
+  const files: any[] = (req?.files as any[]) || [];
+  if (!Array.isArray(files) || files.length === 0) return null;
+  for (const name of fieldNames) {
+    const f = files.find((x) => x?.fieldname === name);
+    if (f) return f;
+  }
+  return files[0] || null;
+}
+
+function buildOmniUserContent(params: { file: { buffer: Buffer; mimetype?: string }; text?: string }) {
+  const { file, text } = params;
+  const mime = (file.mimetype || '').toLowerCase();
+  const dataUrl = fileToDataUrl({ buffer: file.buffer, mimetype: file.mimetype });
+  const parts: any[] = [];
+  if (mime.startsWith('audio/')) {
+    parts.push({ type: 'input_audio', input_audio: { data: dataUrl } });
+  } else if (mime.startsWith('image/')) {
+    parts.push({ type: 'image_url', image_url: { url: dataUrl } });
+  } else if (mime.startsWith('video/')) {
+    parts.push({ type: 'video_url', video_url: { url: dataUrl } });
+  } else {
+    // best effort: treat as binary via video_url (DashScope compatible accepts data URLs)
+    parts.push({ type: 'video_url', video_url: { url: dataUrl } });
+  }
+  if (text && String(text).trim()) {
+    parts.push({ type: 'text', text: String(text) });
+  }
+  return parts;
+}
+
+// Build the chat messages array for an OMNI call. Accepts text-only input (no
+// file), audio/image/video file (with optional accompanying text), and an
+// optional system prompt from the agent UI. When voice reply is on we
+// additionally pin the spoken language to English so the chatbot voice output
+// is consistent regardless of the input language.
+function buildOmniMessages(params: {
+  file?: { buffer: Buffer; mimetype?: string } | null;
+  text?: string;
+  systemPrompt?: string;
+  voiceEnglish?: boolean;
+}) {
+  const { file, text, systemPrompt, voiceEnglish } = params;
+  const messages: any[] = [];
+  if (voiceEnglish) {
+    messages.push({
+      role: 'system',
+      content:
+        'Always respond in clear, natural conversational English. When you generate audio output, speak English regardless of the input language.',
+    });
+  }
+  if (systemPrompt && String(systemPrompt).trim()) {
+    messages.push({ role: 'system', content: String(systemPrompt) });
+  }
+  if (file) {
+    messages.push({
+      role: 'user',
+      content: buildOmniUserContent({ file, text: text ?? '' }),
+    });
+  } else {
+    messages.push({ role: 'user', content: String(text ?? '') });
+  }
+  return messages;
+}
+
+function extFromName(name?: string): string {
+  const n = String(name || '').trim().toLowerCase();
+  const i = n.lastIndexOf('.');
+  if (i === -1) return '';
+  return n.slice(i + 1);
+}
+
+function assertAllowedUpload(params: { model: any; file: { originalname?: string; mimetype?: string } }) {
+  const { model, file } = params;
+  const ext = extFromName(file.originalname);
+  const mime = String(file.mimetype || '').toLowerCase();
+
+  if (model?.type === 'ASR' && model?.name === 'qwen3-asr-flash') {
+    const allowed = new Set([
+      'aac','amr','avi','aiff','flac','flv','mkv','mp3','mpeg','mpg','ogg','opus','wav','webm','wma','wmv','m4a','mp4','mov'
+    ]);
+    if (!ext || !allowed.has(ext)) {
+      throw new Error(`Unsupported file type .${ext || '(none)'} for qwen3-asr-flash`);
+    }
+    return;
+  }
+
+  if (model?.type === 'ASR' && model?.name === 'whisper-large-v3') {
+    const allowed = new Set(['wav','mp3','webm','ogg','opus','flac','m4a','mp4']);
+    if (!ext || !allowed.has(ext)) {
+      throw new Error(`Unsupported file type .${ext || '(none)'} for whisper-large-v3`);
+    }
+    return;
+  }
+
+  if (model?.type === 'OMNI') {
+    // Omni supports audio/image/video; enforce by mimetype first, ext as fallback.
+    if (mime.startsWith('audio/') || mime.startsWith('image/') || mime.startsWith('video/')) return;
+    const allowed = new Set([
+      // audio
+      'aac','amr','aiff','flac','mp3','mpeg','mpg','ogg','opus','wav','webm','wma','m4a','mp4',
+      // image
+      'jpg','jpeg','png','webp','gif','bmp','heic',
+      // video
+      'mp4','mov','mkv','avi','flv','wmv','webm','mpeg','mpg'
+    ]);
+    if (!ext || !allowed.has(ext)) {
+      throw new Error(`Unsupported media type .${ext || '(none)'} for OMNI`);
+    }
+    return;
+  }
+}
+
 function isDashScopeCompatible(endpoint: string): boolean {
   return endpoint.includes('dashscope.aliyuncs.com') || endpoint.includes('dashscope-intl.aliyuncs.com');
+}
+
+// DashScope Qwen-Omni audio output uses different default voices per model family.
+// qwen3-omni-flash: Cherry (default), Ethan, Chelsie, Aiden, ...
+// qwen-omni-turbo / qwen3.5-omni-*: Tina (default), Cherry, Ethan, ...
+function pickOmniVoice(modelName: string): string {
+  const n = String(modelName || '').toLowerCase();
+  if (n.startsWith('qwen3-omni')) return 'Cherry';
+  return 'Cherry';
 }
 
 function normalizeEndpointForRequest(endpoint: string, kind: 'chat' | 'asr'): string {
@@ -265,6 +388,25 @@ const isAdmin = (req: any, res: any, next: any) => {
   next();
 };
 
+function getAuthorizedModelById(user: any, modelId: any): any | null {
+  const id = Number(modelId);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  if (user?.role === 'admin') {
+    return db.prepare('SELECT * FROM models WHERE id = ?').get(id) as any;
+  }
+  return db
+    .prepare(
+      `
+      SELECT m.*
+      FROM models m
+      JOIN user_models um ON um.model_id = m.id
+      WHERE um.user_id = ? AND m.id = ?
+      LIMIT 1
+      `
+    )
+    .get(user?.id, id) as any;
+}
+
 // API Routes
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body;
@@ -298,8 +440,71 @@ app.get('/api/me', authenticate, (req: any, res) => {
 // Models
 app.get('/api/models', authenticate, (req: any, res) => {
   // Hide API keys for users
-  const models = db.prepare('SELECT id, name, type, endpoint FROM models').all();
+  const isAdmin = req.user?.role === 'admin';
+  const models = isAdmin
+    ? db.prepare('SELECT id, name, type, endpoint FROM models').all()
+    : db
+        .prepare(
+          `
+          SELECT m.id, m.name, m.type, m.endpoint
+          FROM models m
+          JOIN user_models um ON um.model_id = m.id
+          WHERE um.user_id = ?
+          ORDER BY m.id ASC
+          `
+        )
+        .all(req.user.id);
   res.json(models);
+});
+
+// Admin: manage customer accounts + model visibility
+app.get('/api/admin/users', authenticate, isAdmin, (req: any, res) => {
+  const users = db.prepare('SELECT id, username, role FROM users ORDER BY id ASC').all();
+  res.json(users);
+});
+
+app.post('/api/admin/users', authenticate, isAdmin, (req: any, res) => {
+  const { username, password, role } = req.body ?? {};
+  if (!username || !password) return res.status(400).json({ error: 'Missing username/password' });
+  const nextRole = role === 'admin' ? 'admin' : 'user';
+  const hash = bcrypt.hashSync(String(password), 10);
+  try {
+    const r = db.prepare('INSERT INTO users (username, password, role) VALUES (?, ?, ?)').run(String(username), hash, nextRole);
+    res.json({ id: r.lastInsertRowid, username, role: nextRole });
+  } catch (e: any) {
+    res.status(400).json({ error: e?.message || 'Failed to create user' });
+  }
+});
+
+app.get('/api/admin/users/:id/models', authenticate, isAdmin, (req: any, res) => {
+  const userId = Number(req.params.id);
+  if (!userId) return res.status(400).json({ error: 'Invalid user id' });
+  const rows = db.prepare('SELECT model_id FROM user_models WHERE user_id = ? ORDER BY model_id ASC').all(userId) as any[];
+  res.json({ model_ids: rows.map((r) => r.model_id) });
+});
+
+app.put('/api/admin/users/:id/models', authenticate, isAdmin, (req: any, res) => {
+  const userId = Number(req.params.id);
+  const model_ids = (req.body?.model_ids ?? []) as any;
+  if (!userId) return res.status(400).json({ error: 'Invalid user id' });
+  if (!Array.isArray(model_ids)) return res.status(400).json({ error: 'model_ids must be an array' });
+
+  const normalized = Array.from(
+    new Set(
+      model_ids
+        .map((x: any) => Number(x))
+        .filter((n: number) => Number.isFinite(n) && n > 0)
+    )
+  );
+
+  const del = db.prepare('DELETE FROM user_models WHERE user_id = ?');
+  const ins = db.prepare('INSERT OR IGNORE INTO user_models (user_id, model_id) VALUES (?, ?)');
+  const tx = db.transaction((ids: number[]) => {
+    del.run(userId);
+    for (const mid of ids) ins.run(userId, mid);
+  });
+  tx(normalized);
+  res.json({ success: true, model_ids: normalized });
 });
 
 app.post('/api/models', authenticate, isAdmin, (req, res) => {
@@ -343,11 +548,11 @@ app.delete('/api/models/:id', authenticate, isAdmin, (req, res) => {
 });
 
 // Test Execution
-app.post('/api/test', authenticate, upload.single('audio'), async (req: any, res) => {
+app.post('/api/test', authenticate, upload.any(), async (req: any, res) => {
   const { model_id, input_text, enable_thinking, stream } = req.body;
   const user_id = req.user.id;
 
-  const model: any = db.prepare('SELECT * FROM models WHERE id = ?').get(model_id);
+  const model: any = getAuthorizedModelById(req.user, model_id);
   if (!model) return res.status(404).json({ error: 'Model not found' });
   model._enable_thinking = String(enable_thinking ?? '').toLowerCase() === 'true';
   model._stream = String(stream ?? '').toLowerCase() === 'true';
@@ -362,11 +567,45 @@ app.post('/api/test', authenticate, upload.single('audio'), async (req: any, res
       output = r.output;
       metrics = r.metrics;
     } else if (model.type === 'ASR') {
-      const file = req.file;
+      const file = getUploadedFile(req, ['audio', 'media']);
       if (!file) throw new Error('Audio file required');
+      assertAllowedUpload({ model, file });
       const r = await callAsr(model, file);
       output = r.output;
       metrics = r.metrics;
+      input_save = file.originalname || input_save;
+    } else if (model.type === 'OMNI') {
+      const file = getUploadedFile(req, ['media', 'audio']);
+      if (!file && !String(input_text ?? '').trim()) {
+        throw new Error('Provide text input or a media file (audio/image/video) for OMNI');
+      }
+      if (file) assertAllowedUpload({ model, file });
+
+      const apiKey = decryptSecret(model.api_key || '');
+      if (!apiKey) throw new Error('Model API key not configured');
+      const endpoint = normalizeEndpointForRequest(model.endpoint, 'chat');
+      const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
+
+      const payload: any = {
+        model: model.name,
+        messages: buildOmniMessages({ file, text: input_text ?? '' }),
+        stream: false,
+      };
+      if (isDashScopeCompatible(endpoint)) payload.enable_thinking = false;
+
+      const startMs = Date.now();
+      const resp = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(payload) });
+      const raw = await resp.text();
+      if (!resp.ok) throw new Error(`Upstream error (${resp.status}): ${raw.slice(0, 4000)}`);
+      const data = raw ? JSON.parse(raw) : {};
+      output =
+        data?.choices?.[0]?.message?.content ??
+        data?.choices?.[0]?.text ??
+        data?.output_text ??
+        data?.text ??
+        JSON.stringify(data);
+      metrics = buildMetrics(startMs, data?.usage);
+      input_save = file?.originalname || (input_text ? input_text : 'OMNI media');
     }
 
     // Save to history
@@ -401,9 +640,15 @@ function extractOpenAiDelta(obj: any): string {
   );
 }
 
+function extractOpenAiAudioDelta(obj: any): string {
+  const a = obj?.choices?.[0]?.delta?.audio;
+  return a?.data ?? a?.["data"] ?? '';
+}
+
 async function proxySseToText(
   upstream: Response,
   onDelta: (delta: string) => void,
+  onAudioDelta: ((audioBase64: string) => void) | null,
   onDone: () => void
 ) {
   if (!upstream.body) return onDone();
@@ -439,6 +684,8 @@ async function proxySseToText(
         const obj = JSON.parse(data);
         const delta = extractOpenAiDelta(obj);
         if (delta) onDelta(delta);
+        const a = extractOpenAiAudioDelta(obj);
+        if (a && onAudioDelta) onAudioDelta(a);
       } catch {
         // ignore parse errors
       }
@@ -448,9 +695,10 @@ async function proxySseToText(
 }
 
 // Streaming test (SSE)
-app.post('/api/test/stream', authenticate, upload.single('audio'), async (req: any, res) => {
-  const { model_id, input_text, enable_thinking } = req.body;
-  const model: any = db.prepare('SELECT * FROM models WHERE id = ?').get(model_id);
+app.post('/api/test/stream', authenticate, upload.any(), async (req: any, res) => {
+  const { model_id, input_text, enable_thinking, omni_voice } = req.body;
+  const user_id = req.user.id;
+  const model: any = getAuthorizedModelById(req.user, model_id);
   if (!model) return res.status(404).send('Model not found');
 
   const isOmniFlash = model.name === 'qwen3-omni-flash';
@@ -464,6 +712,7 @@ app.post('/api/test/stream', authenticate, upload.single('audio'), async (req: a
 
   const startMs = Date.now();
   let firstDeltaMs: number | null = null;
+  let inputSave = input_text || (model.type === 'LLM' ? '' : 'Media File');
 
   try {
     const apiKey = decryptSecret(model.api_key || '');
@@ -488,9 +737,11 @@ app.post('/api/test/stream', authenticate, upload.single('audio'), async (req: a
           enable_thinking: enableThinking,
         };
       }
-    } else {
-      const file = req.file;
+    } else if (model.type === 'ASR') {
+      const file = getUploadedFile(req, ['audio', 'media']);
       if (!file) throw new Error('Audio file required');
+      assertAllowedUpload({ model, file });
+      inputSave = file.originalname || 'Audio File';
       const dataUrl = fileToDataUrl({ buffer: file.buffer, mimetype: file.mimetype });
       upstreamPayload = {
         model: model.name,
@@ -505,6 +756,33 @@ app.post('/api/test/stream', authenticate, upload.single('audio'), async (req: a
           ...(upstreamPayload.chat_template_kwargs || {}),
           enable_thinking: enableThinking,
         };
+      }
+    } else if (model.type === 'OMNI') {
+      const file = getUploadedFile(req, ['media', 'audio']);
+      if (!file && !String(input_text ?? '').trim()) {
+        throw new Error('Provide text input or a media file (audio/image/video) for OMNI');
+      }
+      if (file) assertAllowedUpload({ model, file });
+      inputSave = file?.originalname || (input_text ? String(input_text) : 'OMNI media');
+      const wantsVoice = String(omni_voice ?? '').toLowerCase() === 'true';
+      upstreamPayload = {
+        model: model.name,
+        messages: buildOmniMessages({
+          file,
+          text: input_text ?? '',
+          voiceEnglish: wantsVoice,
+        }),
+        stream: true,
+        ...(wantsVoice
+          ? {
+              modalities: ['text', 'audio'],
+              audio: { voice: pickOmniVoice(model.name), format: 'wav' },
+              stream_options: { include_usage: true },
+            }
+          : {}),
+      };
+      if (isDashScopeCompatible(endpoint)) {
+        upstreamPayload.enable_thinking = enableThinking;
       }
     }
 
@@ -527,6 +805,9 @@ app.post('/api/test/stream', authenticate, upload.single('audio'), async (req: a
         full += delta;
         sseWrite(res, 'delta', delta);
       },
+      (audioB64) => {
+        sseWrite(res, 'audio', audioB64);
+      },
       () => {}
     );
 
@@ -537,6 +818,16 @@ app.post('/api/test/stream', authenticate, upload.single('audio'), async (req: a
     sseWrite(res, 'metrics', JSON.stringify(metrics));
     sseWrite(res, 'done', '');
     res.end();
+
+    if (full) {
+      try {
+        db.prepare(
+          'INSERT INTO history (user_id, model_id, input, output, type) VALUES (?, ?, ?, ?, ?)'
+        ).run(user_id, model.id, inputSave || '', full, model.type);
+      } catch (err) {
+        console.error('Failed to save streaming history:', err);
+      }
+    }
   } catch (e: any) {
     sseWrite(res, 'error', e?.message || 'Stream failed');
     res.end();
@@ -544,7 +835,7 @@ app.post('/api/test/stream', authenticate, upload.single('audio'), async (req: a
 });
 
 // Agent Playground
-app.post('/api/agent/run', authenticate, upload.single('audio'), async (req: any, res) => {
+app.post('/api/agent/run', authenticate, upload.any(), async (req: any, res) => {
   const { pipeline, prompt, input_text, llm_model_id, asr_model_id, omni_model_id, enable_thinking, stream } = req.body ?? {};
   const user_id = req.user.id;
 
@@ -553,27 +844,90 @@ app.post('/api/agent/run', authenticate, upload.single('audio'), async (req: any
 
   try {
     if (pipeline === 'llm') {
-      const llm: any = db.prepare('SELECT * FROM models WHERE id = ?').get(llm_model_id);
+      const llm: any = getAuthorizedModelById(req.user, llm_model_id);
       if (!llm) return res.status(404).json({ error: 'LLM model not found' });
       llm._enable_thinking = String(enable_thinking ?? '').toLowerCase() === 'true';
+
+      // If the user selected an OMNI model from the LLM dropdown, use the
+      // OMNI chat path so optional audio input + optional voice reply work.
+      if (llm.type === 'OMNI') {
+        const file = getUploadedFile(req, ['media', 'audio']);
+        if (file) assertAllowedUpload({ model: llm, file });
+        if (!file && !String(input_text ?? '').trim()) {
+          return res.status(400).json({ error: 'Provide text input or speak/upload audio for OMNI' });
+        }
+
+        const apiKey = decryptSecret(llm.api_key || '');
+        if (!apiKey) throw new Error('Model API key not configured');
+        const endpoint = normalizeEndpointForRequest(llm.endpoint, 'chat');
+        const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
+        const payload: any = {
+          model: llm.name,
+          messages: buildOmniMessages({ file, text: input_text ?? '', systemPrompt: prompt }),
+          stream: false,
+        };
+        if (isDashScopeCompatible(endpoint)) payload.enable_thinking = false;
+
+        const startMs = Date.now();
+        const resp = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(payload) });
+        const raw = await resp.text();
+        if (!resp.ok) throw new Error(`Upstream error (${resp.status}): ${raw.slice(0, 4000)}`);
+        const data = raw ? JSON.parse(raw) : {};
+        const out =
+          data?.choices?.[0]?.message?.content ??
+          data?.choices?.[0]?.text ??
+          data?.output_text ??
+          data?.text ??
+          JSON.stringify(data);
+        metrics = buildMetrics(startMs, data?.usage);
+        steps.push({ title: 'LLM Input', content: file?.originalname ? `[audio] ${file.originalname}\n${input_text ?? ''}` : input_text ?? '' });
+        steps.push({ title: 'LLM Output', content: out });
+
+        try {
+          db.prepare(
+            'INSERT INTO history (user_id, model_id, input, output, type) VALUES (?, ?, ?, ?, ?)'
+          ).run(user_id, llm.id, file?.originalname || input_text || '', out, 'OMNI');
+        } catch (err) {
+          console.error('Failed to save agent llm-omni history:', err);
+        }
+
+        return res.json({ output: out, steps, metrics });
+      }
+
       const r = await callLlm(llm, input_text ?? '', prompt);
       const out = r.output;
       metrics = r.metrics;
       steps.push({ title: 'LLM Input', content: input_text ?? '' });
       steps.push({ title: 'LLM Output', content: out });
+
+      try {
+        db.prepare(
+          'INSERT INTO history (user_id, model_id, input, output, type) VALUES (?, ?, ?, ?, ?)'
+        ).run(user_id, llm.id, input_text ?? '', out, 'LLM');
+      } catch (err) {
+        console.error('Failed to save agent llm history:', err);
+      }
+
       return res.json({ output: out, steps, metrics });
     }
 
-    const file = req.file;
-    if (!file) return res.status(400).json({ error: 'Audio file required' });
+    const file = getUploadedFile(req, ['audio', 'media']);
+    if (pipeline === 'asr_llm' && !file) {
+      return res.status(400).json({ error: 'Audio file required' });
+    }
+    if (pipeline === 'omni' && !file && !String(input_text ?? '').trim()) {
+      return res.status(400).json({ error: 'Provide text input or a media file (audio/image/video) for OMNI' });
+    }
 
     if (pipeline === 'asr_llm') {
-      const asr: any = db.prepare('SELECT * FROM models WHERE id = ?').get(asr_model_id);
-      const llm: any = db.prepare('SELECT * FROM models WHERE id = ?').get(llm_model_id);
+      const asr: any = getAuthorizedModelById(req.user, asr_model_id);
+      const llm: any = getAuthorizedModelById(req.user, llm_model_id);
       if (!asr) return res.status(404).json({ error: 'ASR model not found' });
       if (!llm) return res.status(404).json({ error: 'LLM model not found' });
+      if (!file) return res.status(400).json({ error: 'Audio file required' });
       llm._enable_thinking = String(enable_thinking ?? '').toLowerCase() === 'true';
 
+      assertAllowedUpload({ model: asr, file });
       const asrR = await callAsr(asr, file);
       const transcript = asrR.output;
       steps.push({ title: 'ASR Transcript', content: transcript });
@@ -596,9 +950,46 @@ app.post('/api/agent/run', authenticate, upload.single('audio'), async (req: any
     }
 
     if (pipeline === 'omni') {
-      const omni: any = db.prepare('SELECT * FROM models WHERE id = ?').get(omni_model_id);
+      const omni: any = getAuthorizedModelById(req.user, omni_model_id);
       if (!omni) return res.status(404).json({ error: 'OMNI model not found' });
+      if (file) assertAllowedUpload({ model: omni, file });
 
+      if (omni.type === 'OMNI') {
+        const apiKey = decryptSecret(omni.api_key || '');
+        if (!apiKey) throw new Error('Model API key not configured');
+        const endpoint = normalizeEndpointForRequest(omni.endpoint, 'chat');
+        const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
+        const startMs = Date.now();
+        const payload: any = {
+          model: omni.name,
+          messages: buildOmniMessages({ file, text: input_text ?? '', systemPrompt: prompt }),
+          stream: false,
+        };
+        if (isDashScopeCompatible(endpoint)) payload.enable_thinking = false;
+        const resp = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(payload) });
+        const raw = await resp.text();
+        if (!resp.ok) throw new Error(`Upstream error (${resp.status}): ${raw.slice(0, 4000)}`);
+        const data = raw ? JSON.parse(raw) : {};
+        const out =
+          data?.choices?.[0]?.message?.content ??
+          data?.choices?.[0]?.text ??
+          data?.output_text ??
+          data?.text ??
+          JSON.stringify(data);
+        metrics = buildMetrics(startMs, data?.usage);
+        steps.push({ title: 'OMNI Output', content: out });
+        db.prepare('INSERT INTO history (user_id, model_id, input, output, type) VALUES (?, ?, ?, ?, ?)').run(
+          user_id,
+          omni.id,
+          file?.originalname || (input_text ? String(input_text) : 'Agent OMNI input'),
+          out,
+          'OMNI'
+        );
+        return res.json({ output: out, steps, metrics });
+      }
+
+      // Backward compatible: treat ASR-type omni-like models as audio understanding (still need file)
+      if (!file) return res.status(400).json({ error: 'Audio file required for ASR-style omni' });
       const r = await callAsr(omni, file);
       const out = r.output;
       metrics = r.metrics;
@@ -607,9 +998,9 @@ app.post('/api/agent/run', authenticate, upload.single('audio'), async (req: any
       db.prepare('INSERT INTO history (user_id, model_id, input, output, type) VALUES (?, ?, ?, ?, ?)').run(
         user_id,
         omni.id,
-        'Agent OMNI audio input',
+        file.originalname || 'Agent OMNI audio input',
         out,
-        'ASR'
+        omni.type
       );
 
       return res.json({ output: out, steps, metrics });
@@ -623,8 +1014,19 @@ app.post('/api/agent/run', authenticate, upload.single('audio'), async (req: any
 });
 
 // Agent Playground (streaming output for the final LLM/OMNI step)
-app.post('/api/agent/run/stream', authenticate, upload.single('audio'), async (req: any, res) => {
-  const { pipeline, prompt, input_text, llm_model_id, asr_model_id, omni_model_id, enable_thinking } = req.body ?? {};
+app.post('/api/agent/run/stream', authenticate, upload.any(), async (req: any, res) => {
+  const { pipeline, prompt, input_text, llm_model_id, asr_model_id, omni_model_id, enable_thinking, omni_voice } = req.body ?? {};
+  const user_id = req.user.id;
+  const safeInsertHistory = (model_id: number, input: string, output: string, type: string) => {
+    if (!output) return;
+    try {
+      db.prepare(
+        'INSERT INTO history (user_id, model_id, input, output, type) VALUES (?, ?, ?, ?, ?)'
+      ).run(user_id, model_id, input || '', output, type);
+    } catch (err) {
+      console.error('Failed to save agent stream history:', err);
+    }
+  };
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -638,7 +1040,7 @@ app.post('/api/agent/run/stream', authenticate, upload.single('audio'), async (r
     const steps: Array<{ title: string; content: string }> = [];
 
     if (pipeline === 'llm') {
-      const llm: any = db.prepare('SELECT * FROM models WHERE id = ?').get(llm_model_id);
+      const llm: any = getAuthorizedModelById(req.user, llm_model_id);
       if (!llm) {
         sseWrite(res, 'error', 'LLM model not found');
         return res.end();
@@ -648,6 +1050,71 @@ app.post('/api/agent/run/stream', authenticate, upload.single('audio'), async (r
       if (!apiKey) throw new Error('Model API key not configured');
       const endpoint = normalizeEndpointForRequest(llm.endpoint, 'chat');
       const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
+
+      // OMNI-in-LLM-pipeline branch: optional audio + optional voice reply.
+      if (llm.type === 'OMNI') {
+        const file = getUploadedFile(req, ['media', 'audio']);
+        if (file) assertAllowedUpload({ model: llm, file });
+        if (!file && !String(input_text ?? '').trim()) {
+          sseWrite(res, 'error', 'Provide text input or speak/upload audio for OMNI');
+          return res.end();
+        }
+
+        const wantsVoice = String(omni_voice ?? '').toLowerCase() === 'true';
+        const omniPayload: any = {
+          model: llm.name,
+          messages: buildOmniMessages({
+            file,
+            text: input_text ?? '',
+            systemPrompt: prompt,
+            voiceEnglish: wantsVoice,
+          }),
+          stream: true,
+          ...(wantsVoice
+            ? {
+                modalities: ['text', 'audio'],
+                audio: { voice: pickOmniVoice(llm.name), format: 'wav' },
+                stream_options: { include_usage: true },
+              }
+            : {}),
+        };
+        if (isDashScopeCompatible(endpoint)) omniPayload.enable_thinking = false;
+
+        const upstreamOmni = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(omniPayload) });
+        if (!upstreamOmni.ok) {
+          sseWrite(res, 'error', await upstreamOmni.text());
+          return res.end();
+        }
+
+        let omniFull = '';
+        await proxySseToText(
+          upstreamOmni,
+          (delta) => {
+            if (firstDeltaMs === null) firstDeltaMs = Date.now();
+            omniFull += delta;
+            sseWrite(res, 'delta', delta);
+          },
+          (audioB64) => {
+            sseWrite(res, 'audio', audioB64);
+          },
+          () => {}
+        );
+
+        sseWrite(res, 'steps', JSON.stringify(steps));
+        sseWrite(
+          res,
+          'metrics',
+          JSON.stringify({
+            latency_ms: Math.max(0, Date.now() - startMs),
+            ttft_ms: firstDeltaMs ? Math.max(0, firstDeltaMs - startMs) : null,
+          })
+        );
+        sseWrite(res, 'done', '');
+        res.end();
+        safeInsertHistory(llm.id, file?.originalname || input_text || '', omniFull, 'OMNI');
+        return;
+      }
+
       const payload: any = {
         model: llm.name,
         messages: [
@@ -670,12 +1137,15 @@ app.post('/api/agent/run/stream', authenticate, upload.single('audio'), async (r
         return res.end();
       }
 
+      let llmFull = '';
       await proxySseToText(
         upstream,
         (delta) => {
           if (firstDeltaMs === null) firstDeltaMs = Date.now();
+          llmFull += delta;
           sseWrite(res, 'delta', delta);
         },
+        null,
         () => {}
       );
 
@@ -689,17 +1159,24 @@ app.post('/api/agent/run/stream', authenticate, upload.single('audio'), async (r
         })
       );
       sseWrite(res, 'done', '');
-      return res.end();
+      res.end();
+      safeInsertHistory(llm.id, input_text ?? '', llmFull, 'LLM');
+      return;
     }
 
-    const file = req.file;
-    if (!file) throw new Error('Audio file required');
+    const file = getUploadedFile(req, ['audio', 'media']);
+    if (pipeline === 'asr_llm' && !file) throw new Error('Audio file required');
+    if (pipeline === 'omni' && !file && !String(input_text ?? '').trim()) {
+      throw new Error('Provide text input or a media file (audio/image/video) for OMNI');
+    }
 
     if (pipeline === 'asr_llm') {
-      const asr: any = db.prepare('SELECT * FROM models WHERE id = ?').get(asr_model_id);
-      const llm: any = db.prepare('SELECT * FROM models WHERE id = ?').get(llm_model_id);
+      const asr: any = getAuthorizedModelById(req.user, asr_model_id);
+      const llm: any = getAuthorizedModelById(req.user, llm_model_id);
       if (!asr) throw new Error('ASR model not found');
       if (!llm) throw new Error('LLM model not found');
+      if (!file) throw new Error('Audio file required');
+      assertAllowedUpload({ model: asr, file });
 
       const asrR = await callAsr(asr, file);
       steps.push({ title: 'ASR Transcript', content: asrR.output });
@@ -731,12 +1208,15 @@ app.post('/api/agent/run/stream', authenticate, upload.single('audio'), async (r
         return res.end();
       }
 
+      let llmFull = '';
       await proxySseToText(
         upstream,
         (delta) => {
           if (firstDeltaMs === null) firstDeltaMs = Date.now();
+          llmFull += delta;
           sseWrite(res, 'delta', delta);
         },
+        null,
         () => {}
       );
 
@@ -750,24 +1230,53 @@ app.post('/api/agent/run/stream', authenticate, upload.single('audio'), async (r
         })
       );
       sseWrite(res, 'done', '');
-      return res.end();
+      res.end();
+      safeInsertHistory(
+        llm.id,
+        `ASR(${asr.name}) -> LLM(${llm.name})\n\n${asrR.output}`,
+        llmFull,
+        'LLM'
+      );
+      return;
     }
 
     if (pipeline === 'omni') {
-      const omni: any = db.prepare('SELECT * FROM models WHERE id = ?').get(omni_model_id);
+      const omni: any = getAuthorizedModelById(req.user, omni_model_id);
       if (!omni) throw new Error('OMNI model not found');
+      if (file) assertAllowedUpload({ model: omni, file });
+      if (omni.type !== 'OMNI' && !file) {
+        throw new Error('Audio file required for ASR-style omni');
+      }
 
       // Stream omni output via /api/test/stream-like logic
       const apiKey = decryptSecret(omni.api_key || '');
       if (!apiKey) throw new Error('Model API key not configured');
       const endpoint = normalizeEndpointForRequest(omni.endpoint, 'chat');
       const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
-      const dataUrl = fileToDataUrl({ buffer: file.buffer, mimetype: file.mimetype });
+      const wantsVoice = omni.type === 'OMNI' && String(omni_voice ?? '').toLowerCase() === 'true';
       const payload: any = {
         model: omni.name,
-        messages: [{ role: 'user', content: [{ type: 'input_audio', input_audio: { data: dataUrl } }] }],
+        messages:
+          omni.type === 'OMNI'
+            ? buildOmniMessages({
+                file,
+                text: input_text ?? '',
+                systemPrompt: prompt,
+                voiceEnglish: wantsVoice,
+              })
+            : [
+                {
+                  role: 'user',
+                  content: [{ type: 'input_audio', input_audio: { data: fileToDataUrl({ buffer: file!.buffer, mimetype: file!.mimetype }) } }],
+                },
+              ],
         stream: true,
       };
+      if (wantsVoice) {
+        payload.modalities = ['text', 'audio'];
+        payload.audio = { voice: pickOmniVoice(omni.name), format: 'wav' };
+        payload.stream_options = { ...(payload.stream_options || {}), include_usage: true };
+      }
       if (isDashScopeCompatible(endpoint)) payload.enable_thinking = String(enable_thinking ?? '').toLowerCase() === 'true';
       if (endpoint.includes('modelarts-maas.com')) {
         payload.chat_template_kwargs = {
@@ -782,11 +1291,16 @@ app.post('/api/agent/run/stream', authenticate, upload.single('audio'), async (r
         return res.end();
       }
 
+      let omniFull = '';
       await proxySseToText(
         upstream,
         (delta) => {
           if (firstDeltaMs === null) firstDeltaMs = Date.now();
+          omniFull += delta;
           sseWrite(res, 'delta', delta);
+        },
+        (audioB64) => {
+          sseWrite(res, 'audio', audioB64);
         },
         () => {}
       );
@@ -801,7 +1315,14 @@ app.post('/api/agent/run/stream', authenticate, upload.single('audio'), async (r
         })
       );
       sseWrite(res, 'done', '');
-      return res.end();
+      res.end();
+      safeInsertHistory(
+        omni.id,
+        file?.originalname || (input_text ? String(input_text) : 'Agent OMNI input'),
+        omniFull,
+        omni.type === 'OMNI' ? 'OMNI' : omni.type
+      );
+      return;
     }
 
     sseWrite(res, 'error', 'Unknown pipeline');

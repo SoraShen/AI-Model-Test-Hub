@@ -6,3 +6,5 @@ coverage/
 *.log
 .env*
 !.env.example
+DEPLOYMENT_HUAWEI_CLOUDFLARE.md
+*.m4a

@@ -21,7 +21,7 @@ export const translations: Translations = {
   models: { en: 'Models', zh: '模型' },
   logout: { en: 'Logout', zh: '退出登录' },
   selectModel: { en: 'Select Model', zh: '选择模型' },
-  inputText: { en: 'Input Text', zh: '输入文本' },
+  inputText: { en: 'Input', zh: '输入' },
   uploadAudio: { en: 'Upload Audio', zh: '上传音频' },
   record: { en: 'Record', zh: '录音' },
   stop: { en: 'Stop', zh: '停止' },

@@ -152,16 +152,16 @@ export default function TabModels() {
   };
 
   return (
-    <div className="space-y-8">
-      <div className="flex items-center justify-between">
+    <div className="space-y-6 md:space-y-8">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="space-y-1">
-          <h2 className="text-lg font-bold text-slate-900 tracking-tight uppercase">Infrastructure</h2>
+          <h2 className="text-base md:text-lg font-bold text-slate-900 tracking-tight uppercase">Infrastructure</h2>
           <p className="text-xs text-slate-500 font-medium">Manage enterprise AI endpoints and authentication credentials.</p>
         </div>
         <button
           onClick={() => setIsAdding(!isAdding)}
           disabled={!isAdmin}
-          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2 rounded-lg text-xs font-bold transition-all shadow-lg active:scale-95"
+          className="flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2.5 rounded-lg text-xs font-bold transition-all shadow-lg active:scale-95 w-full sm:w-auto"
         >
           <Plus size={16} />
           {t('addModel').toUpperCase()}
@@ -175,7 +175,7 @@ export default function TabModels() {
       )}
 
       {isAdmin && (
-        <div className="bg-white border border-slate-200 rounded-xl p-8 shadow-sm space-y-6">
+        <div className="bg-white border border-slate-200 rounded-xl p-4 md:p-8 shadow-sm space-y-6">
           <div className="flex items-end justify-between gap-6 flex-wrap">
             <div className="space-y-1">
               <h3 className="text-sm font-bold text-slate-900 tracking-tight uppercase">Customer Access</h3>
@@ -184,7 +184,7 @@ export default function TabModels() {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <form onSubmit={createUser} className="border border-slate-200 rounded-xl p-6 bg-slate-50">
+            <form onSubmit={createUser} className="border border-slate-200 rounded-xl p-4 md:p-6 bg-slate-50">
               <div className="flex items-center justify-between mb-4">
                 <div className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Create user</div>
               </div>
@@ -233,7 +233,7 @@ export default function TabModels() {
               </div>
             </form>
 
-            <div className="border border-slate-200 rounded-xl p-6 bg-white">
+            <div className="border border-slate-200 rounded-xl p-4 md:p-6 bg-white">
               <div className="flex items-center justify-between mb-4">
                 <div className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Model visibility</div>
               </div>
@@ -293,7 +293,7 @@ export default function TabModels() {
       )}
 
       {editingId && (
-        <form onSubmit={handleUpdate} className="bg-white border border-emerald-300/40 rounded-xl p-8 space-y-6 shadow-sm relative overflow-hidden">
+        <form onSubmit={handleUpdate} className="bg-white border border-emerald-300/40 rounded-xl p-4 md:p-8 space-y-6 shadow-sm relative overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-1 bg-emerald-500"></div>
           <div className="flex items-center justify-between">
             <div>
@@ -329,7 +329,8 @@ export default function TabModels() {
                 className="w-full bg-white border border-slate-200 rounded-lg px-4 py-2.5 text-slate-900 focus:outline-none focus:ring-2 ring-emerald-200 transition-all font-medium"
               >
                 <option value="LLM">Text-to-Text (LLM)</option>
-                <option value="ASR">Audio-to-Text / Audio Understanding (ASR)</option>
+                <option value="ASR">Audio-to-Text (ASR)</option>
+                <option value="OMNI">Multimodal (OMNI)</option>
               </select>
             </div>
             <div className="space-y-2">
@@ -368,7 +369,7 @@ export default function TabModels() {
       )}
 
       {isAdding && (
-        <form onSubmit={handleAdd} className="bg-white border border-indigo-300/40 rounded-xl p-8 space-y-6 shadow-sm relative overflow-hidden">
+        <form onSubmit={handleAdd} className="bg-white border border-indigo-300/40 rounded-xl p-4 md:p-8 space-y-6 shadow-sm relative overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-1 bg-indigo-600"></div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="space-y-2">
@@ -390,6 +391,7 @@ export default function TabModels() {
               >
                 <option value="LLM">Text-to-Text (LLM)</option>
                 <option value="ASR">Audio-to-Text (ASR)</option>
+                <option value="OMNI">Multimodal (OMNI)</option>
               </select>
             </div>
             <div className="space-y-2">
@@ -420,29 +422,31 @@ export default function TabModels() {
               </div>
             </div>
           </div>
-          <div className="flex justify-end gap-3 pt-6 border-t border-slate-200">
-            <button type="button" onClick={() => setIsAdding(false)} className="px-6 py-2 text-xs font-bold text-slate-500 hover:text-slate-900 transition-colors">CANCEL</button>
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-3 pt-6 border-t border-slate-200">
+            <button type="button" onClick={() => setIsAdding(false)} className="px-6 py-2.5 text-xs font-bold text-slate-500 hover:text-slate-900 transition-colors">CANCEL</button>
             <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-2.5 rounded-lg text-xs font-bold shadow-lg transition-all active:scale-95">CONFIRM CONFIGURATION</button>
           </div>
         </form>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
         {models.map(model => (
-          <div key={model.id} className="bg-white border border-slate-200 rounded-xl p-6 relative group transition-all hover:border-slate-300 hover:shadow-sm">
+          <div key={model.id} className="bg-white border border-slate-200 rounded-xl p-5 md:p-6 relative group transition-all hover:border-slate-300 hover:shadow-sm">
             {isAdmin && (
-              <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
+              <div className="absolute top-3 right-3 md:top-4 md:right-4 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity flex gap-2">
                <button
                 onClick={() => startEdit(model)}
                 className="p-2 bg-white text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 hover:text-slate-900 transition-all shadow-sm"
                 title="Edit Configuration"
+                aria-label="Edit"
                >
                  <Pencil size={16} />
                </button>
                <button 
                 onClick={() => handleDelete(model.id)}
-                className="p-2 bg-red-500/10 text-red-400 rounded-lg hover:bg-red-500 hover:text-white transition-all shadow-sm"
+                className="p-2 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all shadow-sm"
                 title="Delete Configuration"
+                aria-label="Delete"
                >
                  <Trash2 size={16} />
                </button>
@@ -453,7 +457,7 @@ export default function TabModels() {
                 <Settings2 className="text-slate-500" size={24} />
               </div>
               <div className="min-w-0">
-                <h4 className="text-slate-900 font-bold truncate pr-8">{model.name}</h4>
+                <h4 className={`text-slate-900 font-bold truncate ${isAdmin ? 'pr-20 md:pr-8' : ''}`}>{model.name}</h4>
                 <span
                   className={`text-[10px] font-bold border px-2 py-0.5 rounded uppercase tracking-wider ${
                     model.type === 'LLM'
@@ -470,7 +474,7 @@ export default function TabModels() {
             <div className="space-y-4 font-mono">
                <div className="flex flex-col gap-1">
                   <span className="text-[9px] font-bold text-slate-600 uppercase tracking-widest">Endpoint</span>
-                  <p className="text-xs text-slate-700 truncate bg-slate-50 p-2 rounded border border-slate-200">{model.endpoint}</p>
+                  <p className="text-xs text-slate-700 break-all md:truncate bg-slate-50 p-2 rounded border border-slate-200">{model.endpoint}</p>
                </div>
                <div className="flex flex-col gap-1">
                   <span className="text-[9px] font-bold text-slate-600 uppercase tracking-widest">Security Status</span>

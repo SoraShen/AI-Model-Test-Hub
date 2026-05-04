@@ -32,15 +32,15 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 pt-safe pb-safe">
       <motion.div 
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
-        className="w-full max-w-md bg-white border border-slate-200 rounded-2xl p-10 shadow-xl relative overflow-hidden"
+        className="w-full max-w-md bg-white border border-slate-200 rounded-2xl p-6 sm:p-10 shadow-xl relative overflow-hidden"
       >
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-600 to-indigo-400"></div>
         
-        <div className="flex flex-col items-center mb-10">
+        <div className="flex flex-col items-center mb-8 sm:mb-10">
           <div className="w-14 h-14 bg-indigo-600 rounded-xl flex items-center justify-center mb-4 shadow-lg shadow-indigo-600/20">
             <Brain className="text-white" size={28} />
           </div>
@@ -98,7 +98,7 @@ export default function Login() {
           </button>
         </form>
 
-        <div className="mt-10 pt-6 border-t border-slate-200 text-center">
+        <div className="mt-8 sm:mt-10 pt-6 border-t border-slate-200 text-center">
           <p className="text-[10px] text-slate-600 font-mono tracking-tighter">
             PRO GRADE MODEL EVALUATION
           </p>

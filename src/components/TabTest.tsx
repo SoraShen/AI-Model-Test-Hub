@@ -229,18 +229,18 @@ export default function TabTest() {
   const thinkingEnabled = enableThinking && effectiveStream;
 
   return (
-    <div className="grid grid-rows-[auto,1fr] gap-6 h-full">
+    <div className="grid grid-rows-[auto,1fr] gap-4 md:gap-6 min-h-0 flex-1">
       {/* Configuration Bar */}
-      <div className="bg-white border border-slate-200 rounded-xl p-6 flex flex-wrap items-center justify-between gap-6 shadow-sm">
-        <div className="flex flex-wrap items-center gap-8">
-          <div className="space-y-2">
+      <div className="bg-white border border-slate-200 rounded-xl p-4 md:p-6 flex flex-col md:flex-row md:flex-wrap md:items-center md:justify-between gap-4 md:gap-6 shadow-sm">
+        <div className="flex flex-col md:flex-row md:flex-wrap md:items-center gap-4 md:gap-8 w-full md:w-auto">
+          <div className="space-y-2 w-full md:w-auto">
             <label className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
               {t('selectModel')}
             </label>
             <select 
               value={selectedModel}
               onChange={(e) => setSelectedModel(e.target.value)}
-              className="min-w-[280px] bg-white border border-slate-200 text-slate-900 text-sm rounded-lg px-4 py-2 outline-none focus:ring-2 ring-indigo-200 transition-all font-medium"
+              className="w-full md:min-w-[280px] bg-white border border-slate-200 text-slate-900 text-sm rounded-lg px-4 py-2 outline-none focus:ring-2 ring-indigo-200 transition-all font-medium"
             >
               <option value="">-- {t('selectModel')} --</option>
               {models.map(m => (
@@ -308,7 +308,7 @@ export default function TabTest() {
         <button
           onClick={handleExecute}
           disabled={isLoading || !selectedModel}
-          className="h-10 px-8 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-200 disabled:text-slate-500 text-white font-bold text-xs rounded-lg shadow-sm flex items-center gap-2 transition-all active:scale-95"
+          className="h-11 md:h-10 w-full md:w-auto px-6 md:px-8 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-200 disabled:text-slate-500 text-white font-bold text-xs rounded-lg shadow-sm flex items-center justify-center gap-2 transition-all active:scale-95"
         >
           {isLoading ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />}
           {t('execute').toUpperCase()}
@@ -316,10 +316,10 @@ export default function TabTest() {
       </div>
 
       {/* Main Panels */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 min-h-0 pb-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 min-h-0 pb-2 md:pb-6 flex-1 lg:items-stretch lg:min-h-0">
         {/* Input Area */}
-        <div className="bg-white rounded-xl border border-slate-200 flex flex-col overflow-hidden shadow-sm">
-          <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-white/70">
+        <div className="bg-white rounded-xl border border-slate-200 flex flex-col min-h-0 lg:max-h-[calc(100dvh-10rem)] shadow-sm">
+          <div className="shrink-0 p-3 md:p-4 border-b border-slate-200 flex justify-between items-center bg-white/70">
             <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
               <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
               {t('inputText')}
@@ -329,38 +329,38 @@ export default function TabTest() {
             )}
           </div>
           
-          <div className="flex-1 p-6 overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6">
             {activeModel?.type === 'LLM' ? (
               <textarea
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
-                className="w-full h-full bg-transparent resize-none outline-none text-sm text-slate-800 placeholder:text-slate-400 font-mono leading-relaxed px-0"
+                className="w-full min-h-[200px] lg:min-h-[280px] bg-transparent resize-y outline-none text-sm text-slate-800 placeholder:text-slate-400 font-mono leading-relaxed px-0"
                 placeholder="Enter model instructions or prompt context here..."
               />
             ) : (activeModel?.type === 'ASR' || activeModel?.type === 'OMNI') ? (
-              <div className="h-full flex flex-col gap-6">
-                 <div className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-xl bg-slate-50 group hover:border-indigo-300 transition-colors relative">
+              <div className="flex flex-col gap-4 md:gap-6">
+                 <div className="min-h-[140px] md:min-h-[168px] shrink-0 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-xl bg-slate-50 group hover:border-indigo-300 transition-colors relative p-4 text-center">
                     <input
                       type="file"
                     accept={activeModel?.type === 'OMNI' ? 'audio/*,image/*,video/*' : 'audio/*'}
                       onChange={handleFileUpload}
                       className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                     />
-                    <Upload className="text-slate-500 group-hover:text-indigo-600 mb-2" size={32} />
-                    <span className="text-sm font-medium text-slate-500">
+                    <Upload className="text-slate-500 group-hover:text-indigo-600 mb-2" size={28} />
+                    <span className="text-sm font-medium text-slate-500 break-all px-2">
                       {audioBlob
                         ? (audioBlob as any).name || 'Recorded audio'
                         : activeModel?.type === 'OMNI'
-                          ? 'Optional: drop audio / image / video'
-                          : 'Drop audio file here'}
+                          ? 'Tap to choose audio / image / video (optional)'
+                          : 'Tap to choose an audio file'}
                     </span>
                  </div>
 
                  {activeModel?.type === 'OMNI' && (
-                   <div className="border border-slate-200 rounded-xl bg-white p-4">
+                   <div className="border border-slate-200 rounded-xl bg-white p-4 shrink-0">
                      <div className="flex items-center justify-between mb-2">
                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-                         Text {audioBlob ? '(optional)' : '(or speak via mic / upload)'}
+                         {t('inputText')} {audioBlob ? '(optional)' : '(or speak via mic / upload)'}
                        </span>
                        <span className="text-[10px] text-slate-500 font-mono">CHARS: {inputText.length}</span>
                      </div>
@@ -375,13 +375,13 @@ export default function TabTest() {
                  
                  <button
                    onClick={isRecording ? stopRecording : startRecording}
-                   className={`h-24 flex flex-col items-center justify-center rounded-xl border border-slate-200 transition-all ${
+                   className={`shrink-0 h-20 md:h-24 flex flex-col items-center justify-center rounded-xl border border-slate-200 transition-all active:scale-95 ${
                      isRecording 
                        ? 'bg-red-500/10 border-red-500/50 text-red-500' 
                        : 'bg-white hover:bg-slate-50 text-slate-600'
                    }`}
                  >
-                   {isRecording ? <Square size={24} className="animate-pulse" /> : <Mic size={24} />}
+                   {isRecording ? <Square size={22} className="animate-pulse" /> : <Mic size={22} />}
                    <span className="text-[10px] uppercase font-bold mt-2 tracking-widest">
                      {isRecording ? t('stop') : t('record')}
                    </span>
@@ -396,32 +396,32 @@ export default function TabTest() {
         </div>
 
         {/* Output Area */}
-        <div className="bg-white rounded-xl border border-slate-200 flex flex-col overflow-hidden shadow-sm">
-          <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-white/70">
-            <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+        <div className="bg-white rounded-xl border border-slate-200 flex flex-col min-h-0 lg:max-h-[calc(100dvh-10rem)] shadow-sm">
+          <div className="shrink-0 p-3 md:p-4 border-b border-slate-200 flex justify-between items-center bg-white/70 gap-2">
+            <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 shrink-0">
               <div className={`w-2 h-2 rounded-full ${output ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-slate-300'}`}></div>
               {t('output')}
             </h3>
-            <div className="flex gap-2 items-center">
+            <div className="flex gap-2 items-center min-w-0">
               {activeModel?.name && (
-                <span className="text-[10px] bg-white px-2 py-0.5 rounded text-slate-700 border border-slate-200 font-mono max-w-[360px] truncate">
+                <span className="text-[10px] bg-white px-2 py-0.5 rounded text-slate-700 border border-slate-200 font-mono max-w-[55vw] md:max-w-[360px] truncate">
                   {activeModel.name}
                 </span>
               )}
               {output && (
-                <span className="text-[10px] bg-slate-100 px-2 py-0.5 rounded text-indigo-600 border border-slate-200">COMPLETED</span>
+                <span className="hidden sm:inline text-[10px] bg-slate-100 px-2 py-0.5 rounded text-indigo-600 border border-slate-200">COMPLETED</span>
               )}
             </div>
           </div>
           
-          <div className="flex-1 p-6 bg-slate-50 overflow-y-auto font-mono text-sm leading-relaxed text-slate-800">
+          <div className="flex-1 min-h-0 p-4 md:p-6 bg-slate-50 overflow-y-auto font-mono text-sm leading-relaxed text-slate-800 min-h-[200px]">
             {output ? (
               <div className="space-y-4">
                 {metrics && (
-                  <div className="text-[10px] uppercase tracking-widest font-bold text-slate-500 border border-slate-200 bg-white rounded-lg px-3 py-2">
-                    <span className="mr-4">LATENCY: {metrics.latency_ms}ms</span>
-                    {typeof metrics.ttft_ms === 'number' && <span className="mr-4">TTFT: {metrics.ttft_ms}ms</span>}
-                    {typeof metrics.total_tokens === 'number' && <span className="mr-4">TOKENS: {metrics.total_tokens}</span>}
+                  <div className="text-[10px] uppercase tracking-widest font-bold text-slate-500 border border-slate-200 bg-white rounded-lg px-3 py-2 flex flex-wrap gap-x-4 gap-y-1">
+                    <span>LATENCY: {metrics.latency_ms}ms</span>
+                    {typeof metrics.ttft_ms === 'number' && <span>TTFT: {metrics.ttft_ms}ms</span>}
+                    {typeof metrics.total_tokens === 'number' && <span>TOKENS: {metrics.total_tokens}</span>}
                     {typeof metrics.tps === 'number' && <span>TPS: {metrics.tps.toFixed(2)}</span>}
                   </div>
                 )}
@@ -434,7 +434,7 @@ export default function TabTest() {
                 {omniAudioUrl && (
                   <audio className="w-full" controls src={omniAudioUrl} />
                 )}
-                <div className="whitespace-pre-wrap">{output}</div>
+                <div className="whitespace-pre-wrap break-words">{output}</div>
               </div>
             ) : (
               <div className="h-full flex items-center justify-center text-slate-500 italic border-2 border-dashed border-slate-200 rounded-xl">
